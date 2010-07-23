@@ -25,15 +25,14 @@ import zfs_cfg
 HOBBIT_TESTNAME="zfs"
 
 ZPOOL_CMD="/usr/sbin/zpool list -o name,size,used,available,capacity,health"
-ZFS_LIST_CMD="zfs list -H -t filesystem | cut -f1"
-ZFS_GET_CMD="zfs get -H -p used,available %s | cut -f2-3 "
+ZFS_LIST_CMD="/usr/sbin/zfs list -H -t filesystem | cut -f1"
+ZFS_GET_CMD="/usr/sbin/zfs get -H -p used,available %s | cut -f2-3 "
 ZPOOL_STATUS_XV='/usr/sbin/zpool status -xv'
 
 # to pseudo test the FAULTED
 #  ZPOOL_CMD="(/usr/sbin/zpool list -o name,size,used,available,capacity,health ; echo 'zpool_faulted      -      -      -      -  FAULTED')" 
 
 PAGE_COLOR='green'
-
 
 
 # class about config
@@ -62,7 +61,7 @@ class Size(long):
 
 class ZfsTresholdName(str):
    '''this class allow to compile once the RE'''
-   def __new__(cls,  zfs_name):
+   def __new__(cls, zfs_name):
       ret=str.__new__( cls, (zfs_name) )
       ret.re_str='^%s$'%zfs_name
       ret.re=re.compile(ret.re_str)
@@ -88,7 +87,7 @@ class TreshHold(list):
       ret=self.value_yellow_red2color(value, *self.default)
       # check the other possibilities
       for zpool_treshold_name, yellow, red in self:
-         if zpool_treshold_name.re.match(zpool_name):            
+         if zpool_treshold_name.re.match(zpool_name):
             ret_value=self.value_yellow_red2color(value, yellow, red)
             break
 
@@ -157,11 +156,11 @@ def populate_zfs():
    for zfsname in lzfsname:
       zfs=Zfs(zfsname.rstrip())
       dzfs[zfs.name]=zfs
-      tmp_cmd=ZFS_GET_CMD %  zfs.name
+      tmp_cmd=ZFS_GET_CMD % zfs.name
       q=s.Popen(tmp_cmd, stdout=s.PIPE, shell=True)
       lget=q.stdout.readlines()
       for get in lget:
-         # get: used    8493892096
+         # get: used 8493892096
          get=get.rstrip()
          (prop_name, prop_value )=get.split()
          if prop_name in ['size', 'used', 'available']:
@@ -173,7 +172,7 @@ def populate_zfs():
       if len(lpath_elem) > 1:
          for i in range(len(lpath_elem)-1):
             subpath='/'.join(lpath_elem[:i+1])
-            dzfs[subpath].lchild.append(zfs)   
+            dzfs[subpath].lchild.append(zfs)
    return dzfs
    
 dzfs=populate_zfs()
@@ -344,7 +343,7 @@ def show_in_terminal():
 
 def show_in_xymon():
    ret='<table>\
- <tr><td>name</td>\
+ <tr><td>name to work</td>\
  <td align="right">size</td>\
  <td align="right">used</td>\
  <td align="right">used_2</td>\
@@ -369,6 +368,11 @@ def show_in_xymon():
          ,'health': zpool.health
          }
       else:
+         ret+='\n <!--LineToGraph:zfs_v1.1 name:%(name)s cap:%(cap)s cap_2:%(cap_2).2f -->' %{
+            'name': zpool.name
+           ,'cap': zpool.cap
+           ,'cap_2': float(zpool.used_2)/float(zpool.size)*100
+         }
          ret+='\n <!--name--><tr><td>&%(color)s %(name)s</td>\
  <!--size--><td align="right"> %(size)s</td>\
  <!--used--><td align="right"> %(used)s</td>\
@@ -390,10 +394,10 @@ def show_in_xymon():
          }
          zpool.zfs.lchild.sort(cmp_name)
          for zfs in zpool.zfs.lchild:
-            ret+='\n  <!--LineToGraph:zfs_v1.2 name:%(name)s cap_2:%(cap_2).2f -->' %{
+            ret+='\n <!--LineToGraph:zfs_v1.2 name:%(name)s cap_2:%(cap_2).2f -->' %{
             'name': zfs.name
             ,'cap_2': zfs.cap_2
-            }      
+            }
             ret+=' <!-- name --><tr><td>%(name)s</td> \
  <!--size--><td align="right"> %(size)s</td>\
  <!--used--><td align="right"> %(used)s</td>\
