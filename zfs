@@ -4,9 +4,15 @@
 
 # 02.02.2010 Cedric.Briner@unige.ch
 #            created
+# 22.07.2010 Cedric.Briner@unige.ch
+#            tested on zpool Unavailable, Faulted, Degraded
+#            separettely to ensure that every kinds of error
+#            report as a red page
 #
-# more info on http://hobbitmon.sourceforge.net/docs/man8/hobbitd_rrd.8.html
-# by using the method "CUSTOM RRD DATA VIA SCRIPTS"
+#
+# more info on how to create external script
+#   http://hobbitmon.sourceforge.net/docs/man8/hobbitd_rrd.8.html
+#   by using the method "CUSTOM RRD DATA VIA SCRIPTS"
 
 # imports
 import sys, os
@@ -23,14 +29,18 @@ ZFS_LIST_CMD="zfs list -H -t filesystem | cut -f1"
 ZFS_GET_CMD="zfs get -H -p used,available %s | cut -f2-3 "
 ZPOOL_STATUS_XV='/usr/sbin/zpool status -xv'
 
+# to pseudo test the FAULTED
+#  ZPOOL_CMD="(/usr/sbin/zpool list -o name,size,used,available,capacity,health ; echo 'zpool_faulted      -      -      -      -  FAULTED')" 
+
 PAGE_COLOR='green'
+
 
 
 # class about config
 class Size(long):
    import math
-   power={'K':3, 'M':6, 'G':9, 'T':12, 'P':15}
-   rev_power={3:'K', 6:'M', 9:'G', 12:'T', 15:'P'}
+   power={'µ':-6, 'm':-3, '':0, 'K':3, 'M':6, 'G':9, 'T':12, 'P':15}
+   rev_power={-6:'µ',-3:'m', 3:'K', 6:'M', 9:'G', 12:'T', 15:'P'}
    def __new__(cls, str_size):
       if type(str_size) == Size:
          return str_size
@@ -170,22 +180,39 @@ dzfs=populate_zfs()
 
 class Zpool(object):
    HEALTH_GREEN='ONLINE'
-   def __init__(self, name, size, used, avail, cap, health, zfs):
+   def __init__(self, name, size, used, avail, cap, health, zfs):      
       '''header     = "NAME       SIZE  USED  AVAIL CAP HEALTH"
-      zfs_output = "mediadev_pool 49.2G 7.92G 41.3G 16% ONLINE" '''
+      zfs_output = "mediadev_pool 49.2G 7.92G 41.3G 16% ONLINE"
+      zfs_output = "zpool_faulted   -     -     -    -  FAULTED" '''
       # find the index for each parameter
-      self.zfs=zfs
       self.name=name
-      self.size=Size(size)
-      self.used=Size(self.zfs.used)
-      self.used_2=Size(self.zfs.used_2)
-      self.avail=Size(avail)
-      self.cap=cap
-      self.cap_2=float(self.used_2)/float(self.size)*100
       self.health=health
-      self.color=self.calculate_color()     
+      if health=='FAULTED':
+         self.zfs=None
+         self.size=None
+         self.used=None
+         self.used_2=None
+         self.avail=None
+         self.cap=None
+      else:
+         self.zfs=zfs
+         self.size=Size(size)
+         self.used=Size(self.zfs.used)
+         self.used_2=Size(self.zfs.used_2)
+         self.avail=Size(avail)
+         self.cap=cap
+      self.color=self.calculate_color()
+   def get_cap_2(self):
+      if self.health=='Faulted':
+         return None
+      else:
+         return float(self.used_2)/float(self.size)*100
+   cap_2=property(get_cap_2)
    def get_lzfs(self):
-      return [self.zfs]+self.zfs.ldescendant
+      if health=='Faulted':
+         return []
+      else:
+         return [self.zfs]+self.zfs.ldescendant
    def __repr__(self):
       return "zpool(%s)" % self.name
    def calculate_color(self):
@@ -217,17 +244,28 @@ def populate_zpool():
    # zfs_output = "mediadev_pool 49.2G 7.92G 41.3G 16% ONLINE"
    for entry in lentry:
       lvalue=entry.split()
-      zfs_root=dzfs[lvalue[lheader.index('NAME')]]
-      zpool=Zpool(lvalue[lheader.index('NAME')]
-                 ,lvalue[lheader.index('SIZE')]
-                 ,lvalue[lheader.index('USED')]
-                 ,lvalue[lheader.index('AVAIL')]
-                 ,int( lvalue[lheader.index('CAP')][0:-1]) # cap is 16 and not '16%'
-                 ,lvalue[lheader.index('HEALTH')]
-                 ,zfs_root
-                 )
-      for zfs in [zfs_root]+zfs_root.ldescendant:
-         zfs.zpool=zpool
+      # when a zpool is faulted, there is no corresponding zfs FS.
+      if lvalue[lheader.index('HEALTH')] == 'FAULTED':
+         zpool=Zpool(lvalue[lheader.index('NAME')]
+                    ,None # 'SIZE'
+                    ,None # 'USED'
+                    ,None #'AVAIL'
+                    ,None #'CAP'
+                    ,'FAULTED' # 'HEALTH'
+                    ,None
+                    )
+      else:
+         zfs_root=dzfs[lvalue[lheader.index('NAME')]]
+         zpool=Zpool(lvalue[lheader.index('NAME')]
+                    ,lvalue[lheader.index('SIZE')]
+                    ,lvalue[lheader.index('USED')]
+                    ,lvalue[lheader.index('AVAIL')]
+                    ,int( lvalue[lheader.index('CAP')][0:-1]) # cap is 16 and not '16%'
+                    ,lvalue[lheader.index('HEALTH')]
+                    ,zfs_root
+                    )
+         for zfs in [zfs_root]+zfs_root.ldescendant:
+            zfs.zpool=zpool
       lzpool.append(zpool)
    return lzpool
 
@@ -250,6 +288,60 @@ lzpool=populate_zpool()
 for zpool in lzpool:
    PAGE_COLOR=add_color(PAGE_COLOR, zpool.color)
 
+def getSizeOfList(l):
+   return map(lambda x:len(x), l)
+
+def listlist2nicestr(ll):
+   outputFormat=[]
+   if list != type(ll):
+      return 'this is not a list'
+   if len(ll)==0:
+      return ''
+   for i in range(len(ll)):
+      if list != type(ll[i]):
+         return 'this list in not constitued of list'
+      #lelem=lelem+ll[i]
+      if 0 == i:
+         refSizeList=getSizeOfList(ll[i])
+         refLenList=len(ll[i])
+      else:
+         if refLenList != len(ll[i]):
+            return 'error all the list should be the same lenght'
+         sizeList=getSizeOfList(ll[i])
+         for j in range(refLenList):
+            if refSizeList[j]< sizeList[j]:
+               refSizeList[j] = sizeList[j]
+   outputFormatLine=u' '.join( map(lambda x:"%-"+unicode(x)+'s', refSizeList) )
+   output=u''
+   for l in ll:
+      try:
+         output+=outputFormatLine%tuple(l)+u'\n'
+      except UnicodeDecodeError, qq:
+         print str(type(output)), output
+         print l
+         print str(type (l[1])),  l[1]
+         print str(type (ll[13][1][0])), ll[13][1][0]
+         raise qq
+   return output
+
+def show_in_terminal():
+   ret='zpool status -xv :'+','.join(zpool_status.lret)
+   llret=[['name', 'size', 'used', 'used_2', 'avail', 'cap', 'cap_2', 'health']]
+   for zpool in lzpool:
+      if zpool.health=='FAULTED':
+         llret.append([zpool.name, '-', '-', '-'
+                     , '-', '-', '-', zpool.health])
+      else:
+         llret.append([zpool.name, str(zpool.size), str(zpool.used), str(zpool.used_2)
+                     , str(zpool.avail), str(zpool.cap)+'%', '%.2f%%' % zpool.cap_2, zpool.health])
+         zpool.zfs.lchild.sort(cmp_name)
+         for zfs in zpool.zfs.lchild:
+            llret.append(['- '+zfs.name, '', str(zfs.used), str(zfs.used_2)
+                        , str(zfs.available), '', '%.2f%%' % zfs.cap_2, ''])
+   # put the llret in a nice shape
+   ret+=2*os.linesep+listlist2nicestr(llret)
+   return ret
+
 def show_in_xymon():
    ret='<table>\
  <tr><td>name</td>\
@@ -262,12 +354,22 @@ def show_in_xymon():
  <td align="right">health</td>\
  </tr>'
    for zpool in lzpool:
-      ret+='\n <!--LineToGraph:zfs_v1.1 name:%(name)s cap:%(cap)s cap_2:%(cap_2).2f -->' %{
-          'name': zpool.name
-         ,'cap': zpool.cap
-         ,'cap_2': float(zpool.used_2)/float(zpool.size)*100
+      if zpool.health=='FAULTED':
+         ret+='\n <!--name--><tr><td>&%(color)s %(name)s</td>\
+ <!--size--><td align="right">-</td>\
+ <!--used--><td align="right">-</td>\
+ <!--used_2--><td align="right">-</td>\
+ <!--avail--><td align="right">-</td>\
+ <!--cap--><td align="right">-</td>\
+ <!--cap_2--><td align="right">-</td>\
+ <!--health--><td align="right"> %(health)s</td>\
+ </tr>' %{
+          'color': zpool.color
+         ,'name': zpool.name
+         ,'health': zpool.health
          }
-      ret+='\n <!--name--><tr><td>&%(color)s %(name)s</td>\
+      else:
+         ret+='\n <!--name--><tr><td>&%(color)s %(name)s</td>\
  <!--size--><td align="right"> %(size)s</td>\
  <!--used--><td align="right"> %(used)s</td>\
  <!--used_2--><td align="right"> %(used_2)s</td>\
@@ -286,13 +388,13 @@ def show_in_xymon():
          ,'cap_2': float(zpool.used_2)/float(zpool.size)*100
          ,'health': zpool.health
          }
-      zpool.zfs.lchild.sort(cmp_name)
-      for zfs in zpool.zfs.lchild:
-         ret+='\n  <!--LineToGraph:zfs_v1.2 name:%(name)s cap_2:%(cap_2).2f -->' %{
-         'name': zfs.name
-         ,'cap_2': zfs.cap_2
-         }      
-         ret+=' <!-- name --><tr><td>%(name)s</td> \
+         zpool.zfs.lchild.sort(cmp_name)
+         for zfs in zpool.zfs.lchild:
+            ret+='\n  <!--LineToGraph:zfs_v1.2 name:%(name)s cap_2:%(cap_2).2f -->' %{
+            'name': zfs.name
+            ,'cap_2': zfs.cap_2
+            }      
+            ret+=' <!-- name --><tr><td>%(name)s</td> \
  <!--size--><td align="right"> %(size)s</td>\
  <!--used--><td align="right"> %(used)s</td>\
  <!--used_2--><td align="right"> %(used_2)s</td>\
@@ -310,9 +412,9 @@ def show_in_xymon():
          ,'cap_2': zfs.cap_2
          ,'health': ''
          }
-   ret+='<tr><td>&%(color)s zpool status -xv</td><td colspan="6">%(lret)s</td></tr>' %{
-      'color':zpool_status.color
-      ,'lret':'<br/>'.join(zpool_status.lret)}
+   ret+='<tr><td valign="top">&%(color)s zpool status -xv</td><td colspan="6">%(lret)s</td></tr>' %{
+     'color':zpool_status.color
+    ,'lret':'<br/>'.join(zpool_status.lret)}
    ret = ret[:-1]+'</tr></table>\n'
    return ret
 
@@ -339,6 +441,6 @@ else:
    print
    print "table"
    print "-----"
-   print table
+   print show_in_terminal()
 
 sys.exit(0)
