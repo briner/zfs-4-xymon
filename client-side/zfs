@@ -7,8 +7,7 @@
 # 22.07.2010 Cedric.Briner@unige.ch
 #            tested on zpool Unavailable, Faulted, Degraded
 #            separettely to ensure that every kinds of error
-#            report as a red page
-#
+#            report as a red page#
 #
 # more info on how to create external script
 #   http://hobbitmon.sourceforge.net/docs/man8/hobbitd_rrd.8.html
@@ -52,6 +51,8 @@ class Size(long):
       ret=long.__new__( cls, (inst) )
       return ret
    def __str__(self):
+      if self==0:
+         return '0.00'
       eng_power=(math.floor(math.log10 (self)/3))*3
       ret=float(self)/10.**eng_power
       return '%.2f' % ret+self.rev_power[eng_power]
@@ -221,7 +222,7 @@ class Zpool(object):
       default_treshold=CAPACITY_TRESHOLD.default
       # check if there is specific configuration
       for zpool_treshold_name, yellow, red in CAPACITY_TRESHOLD:
-         if zpool_treshold_name.re.match(zpool_name):
+         if zpool_treshold_name.re.match(self.name):
             default_treshold=(yellow, red)
             break
       # in which state are we (green, yellow, red)
@@ -342,8 +343,35 @@ def show_in_terminal():
    return ret
 
 def show_in_xymon():
+   # ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
+   #  ! ! ! ! ! ! ! ! !   A T T E N T I O N   ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
+   # ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
+   # the format of xymon has to be very strict, so that it will work with
+   # hobbit rrd. In hobbit_src/lib/htmllog.c we can read
+   #		/* Count how many lines are in the status message. This is needed by hobbitd_graph later */
+   #		linecount = 0; p = restofmsg;
+   #		do {
+   #			/* First skip all whitespace and blank lines */
+   #			while ((*p) && (isspace((int)*p) || iscntrl((int)*p))) p++;
+   #			if (*p) {
+   #				if ((*p == '&') && (parse_color(p+1) != -1)) {
+   #					/* A "warninglight" line - skip it, unless its from a Netware box */
+   #					if (netwarediskreport) linecount++;
+   #				}
+   #				else {
+   #					/* We found something that is not blank, so one more line */
+   #					if (!netwarediskreport) linecount++;
+   #				}
+   #				/* Then skip forward to the EOLN */
+   #				p = strchr(p, '\n');
+   #			}
+   #			} while (p && (*p));
+   # so this means that we have to have one line per entry in the rrd
+   # ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
+   #  ! ! ! ! ! ! ! ! !   A T T E N T I O N   ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
+   # ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
    ret='<table>\
- <tr><td>name to work</td>\
+ <tr><td>name</td>\
  <td align="right">size</td>\
  <td align="right">used</td>\
  <td align="right">used_2</td>\
