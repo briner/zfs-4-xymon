@@ -7,7 +7,15 @@
 # 22.07.2010 Cedric.Briner@unige.ch
 #            tested on zpool Unavailable, Faulted, Degraded
 #            separettely to ensure that every kinds of error
-#            report as a red page#
+#            report as a red page
+# 29.10.2010 Cedric.Briner@UniGE.ch
+#            - modified the class to take in account IEC and SI prefixes. SI
+#            prefixes are the common one (...n,µ,m,k,M,G,T...) when IEC prefixes
+#            were the one used in computer science (Ki,Mi,Gi...). More
+#            information on : http://en.wikipedia.org/wiki/Binary_prefix.
+#            - take in account that zfs command give information on IEC format
+#            with uncorrect format (eg: 1Ko, is in fact 1Kio then 1024 octet)
+#
 #
 # more info on how to create external script
 #   http://hobbitmon.sourceforge.net/docs/man8/hobbitd_rrd.8.html
@@ -36,29 +44,142 @@ PAGE_COLOR='green'
 
 # class about config
 class Size(long):
-   import math
-   power={'µ':-6, 'm':-3, '':0, 'K':3, 'M':6, 'G':9, 'T':12, 'P':15}
-   rev_power={-6:'µ',-3:'m', 3:'K', 6:'M', 9:'G', 12:'T', 15:'P'}
-   def __new__(cls, str_size):
+   ''' from : http://fr.wikipedia.org/wiki/Pr%C3%A9fixe_binaire#Normes
+   IEC : International Electrotechnical Commission (Kio : kibioctet, Mio : mebioctet, ...) 1Kio = 1024 octet
+   SI :  International System of Units (ko, Mo, Go, ...) 1ko = 100 octet
+   '''
+   DEFAULT_OUTPUT_PREFIX='si'  # could be [ 'iec', 'si'  ]
+   lsi_prefix_indice=(('p',-12),('n',-9),('µ',-6), ('m',-3),('',0)
+                     ,('',0),('k',3), ('M',6), ('G',9), ('T',12), ('P',15), ('E',18), ('Z',21), ('Y',24))
+   liec_prefix_indice=(('',0), ('Ki',10), ('Mi',20), ('Gi',30), ('Ti',40), ('Pi',50), ('Ei',60), ('Zi',70), ('Yi',80))
+   lsi_iec_prefix=(('k','Ki'), ('M','Mi'), ('G','Gi'), ('T','Ti'), ('P','Pi'), ('E','Ei'), ('Z','Zi'), ('Y','Yi'))
+   liec_prefix=[prefix for prefix, indice in liec_prefix_indice]
+   # all the lines between here and the first "def function"
+   # allow to manipulated more easily the data above (lsi_prefix_indice, ..., liec_prefix)
+   # si stuff
+   dsi_indice_prefix={}
+   dsi_prefix_indice={}
+   for prefix, indice in lsi_prefix_indice:
+      dsi_indice_prefix[indice]=prefix
+      dsi_prefix_indice[prefix]=indice
+   lsi_prefix=[prefix for prefix, indice in lsi_prefix_indice]
+   # iec stuff
+   diec_indice_prefix={}
+   diec_prefix_indice={}
+   for prefix, indice in liec_prefix_indice:
+      diec_indice_prefix[indice]=prefix
+      diec_prefix_indice[prefix]=indice
+   # si <> iec stuff
+   dsi_iec_prefix={}
+   diec_si_prefix={}
+   for si_prefix, iec_prefix in lsi_iec_prefix:
+      dsi_iec_prefix[si_prefix]=iec_prefix
+      diec_si_prefix[iec_prefix]=si_prefix
+   #
+   # class method
+   def change_default_output_prefix(cls, default_output_prefix):
+      if default_output_prefix in ['iec', 'si']:
+         cls.DEFAULT_OUTPUT_PREFIX=default_output_prefix
+      else:
+         raise Exception ('can not change the "default_output_prefix" to %s' % default_output_prefix)
+   change_default_output_prefix=classmethod(change_default_output_prefix)
+   def __new__(cls, str_size, force_to=None):
+      #
+      # function for commodities
+      def _new_si(str_size, prefix):
+         str_size=str_size.replace(prefix,'')
+         str_size=long( float(str_size)*10**cls.dsi_prefix_indice[prefix] )
+         return long.__new__(cls, str_size)
+      def _new_iec(str_size, prefix):
+         str_size=str_size.replace(prefix,'')
+         str_size=long( float(str_size)*2**cls.diec_prefix_indice[prefix] )
+         return long.__new__(cls, str_size)
+      def _new_force(str_size, force_to, dsi_iec_prefix, diec_si_prefix):
+         if force_to == 'iec': # then it is in SI format
+            for prefix in dsi_iec_prefix.keys():
+               if prefix == '':
+                  continue
+               if -1 != str_size.find(prefix):
+                  iec_prefix=dsi_iec_prefix.get(prefix)
+                  if iec_prefix:
+                     return str_size.replace(prefix, iec_prefix)
+                  raise Exception ('can not force format from SI to IEC for the prefix %s' % prefix)
+         elif force_to == 'si': # then it is in IEC format
+            for prefix in diec_si_prefix.keys():
+               if prefix == '':
+                  continue
+               if -1 != str_size.find(prefix):
+                  si_prefix=diec_si_prefix.get(prefix)
+                  if si_prefix:
+                     return str_size.replace(prefix, si_prefix)
+                  raise Exception ('can not force format from IEC to SI for the prefix %s' % prefix)
+      #
+      # check argument
+      if force_to not in [ 'si', 'iec', None]:
+         raise Exception ("instance Size argument force_to must be in [ 'si', 'iec', None]")
+      #
+      # TYPE: Size
       if type(str_size) == Size:
          return str_size
+      #
+      # TYPE: str
       if type(str_size) in [str]:
-         str_size=long( float(str_size[:-1])*10**cls.power[str_size[-1]] )
+         #
+         # treat the case force_to
+         if force_to != None:
+            str_size=_new_force(str_size, force_to, cls.dsi_iec_prefix, cls.diec_si_prefix)
+         # because the prefix of iec are longer then, search that one first
+         # and then search for si ones
+         #
+         # IEC
+         for prefix in cls.liec_prefix:
+            if prefix == '':
+               continue               
+            if -1 != str_size.find(prefix):
+               return _new_iec(str_size, prefix)
+         #
+         # SI
+         for prefix in cls.lsi_prefix:
+            if prefix == '':
+               continue               
+            if -1 != str_size.find(prefix):
+               return _new_si(str_size, prefix)
+         if not found:
+            try:
+               str_size=long(str_size)
+            except:
+               raise Exception ('cannot create a Size of : %s' % str_size)
+            return long.__new__(cls, str_size)
+      #
+      # TYPE: [int, float, long]
       if type(str_size) in [int, float, long]:
          inst=long(str_size)
       else:
          raise Exception.ValueError()
       ret=long.__new__( cls, (inst) )
       return ret
-   def __str__(self):
+   def to_iec(self):
       if self==0:
          return '0.00'
-      eng_power=(math.floor(math.log10 (self)/3))*3
+      eng_power=int(math.floor((math.log10(self)/math.log10(2.))/10)*10)
+      ret=float(self)/2.**eng_power
+      return '%.2f' % ret+self.diec_indice_prefix[eng_power]
+   def to_si(self):
+      if self==0:
+         return '0.00'
+      eng_power=int((math.floor(math.log10 (self)/3))*3)
       ret=float(self)/10.**eng_power
-      return '%.2f' % ret+self.rev_power[eng_power]
+      return '%.2f' % ret+self.dsi_indice_prefix[eng_power]
+   def __str__(self):
+      if self.DEFAULT_OUTPUT_PREFIX == 'si':
+         return self.to_si()
+      elif self.DEFAULT_OUTPUT_PREFIX == 'iec':
+         return self.to_iec()
    def str_long(self):
       return long(self)
 
+# output from print instance <Size> will be in IEC format
+Size.change_default_output_prefix('iec')
 
 class ZfsTresholdName(str):
    '''this class allow to compile once the RE'''
@@ -98,6 +219,7 @@ CAPACITY_TRESHOLD=TreshHold( *zfs_cfg.CAPACITY_TRESHOLD )
 for config in zfs_cfg.LCAPACITY_TRESHOLD_TUNING:
    CAPACITY_TRESHOLD.append( *config )
 
+
 #
 # definition and classes and populate them
 #
@@ -132,8 +254,6 @@ class Zfs(object):
          descent+=child.ldescendant
       return descent
    ldescendant=property(get_ldescendant)
-   
-      
 
 def cmp_name(self,other):
       if not isinstance(other, Zfs):
@@ -180,7 +300,7 @@ dzfs=populate_zfs()
 
 class Zpool(object):
    HEALTH_GREEN='ONLINE'
-   def __init__(self, name, size, used, avail, cap, health, zfs):      
+   def __init__(self, name, size, used, avail, cap, health, zfs, force_to=None):      
       '''header     = "NAME       SIZE  USED  AVAIL CAP HEALTH"
       zfs_output = "mediadev_pool 49.2G 7.92G 41.3G 16% ONLINE"
       zfs_output = "zpool_faulted   -     -     -    -  FAULTED" '''
@@ -196,10 +316,10 @@ class Zpool(object):
          self.cap=None
       else:
          self.zfs=zfs
-         self.size=Size(size)
-         self.used=Size(self.zfs.used)
-         self.used_2=Size(self.zfs.used_2)
-         self.avail=Size(avail)
+         self.size=Size(size, force_to=force_to)
+         self.used=Size(self.zfs.used, force_to=force_to)
+         self.used_2=Size(self.zfs.used_2, force_to=force_to)
+         self.avail=Size(avail, force_to=force_to)
          self.cap=cap
       self.color=self.calculate_color()
    def get_cap_2(self):
@@ -263,6 +383,7 @@ def populate_zpool():
                     ,int( lvalue[lheader.index('CAP')][0:-1]) # cap is 16 and not '16%'
                     ,lvalue[lheader.index('HEALTH')]
                     ,zfs_root
+                    ,force_to='iec' # because ZPOOL_CMD gives info in KB when it is actually in KiB
                     )
          for zfs in [zfs_root]+zfs_root.ldescendant:
             zfs.zpool=zpool
