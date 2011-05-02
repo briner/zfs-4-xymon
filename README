@@ -1,6 +1,39 @@
-<html>
-<body>
-<h1> test header </h1>
-test2
-</body>
-</html>
+zfs-4-xymon packages was mainly created to get a better monitoring of zpool and zfs within xymon.
+With zfs comes difficulties to know which zfs get bigger within a zpool. This scripts extracts such informations and bring it to xymon. Furthermore, it can also display the same informations in the terminal.
+
+e.g.
+/usr/local/hobbit/client/ext/zfs-list-detail 
+  # zpool status -xv :all pools are healthy
+  # 
+  # name                                         size     used      used_2    avail    cap cap_2  health
+  # clio2_pool                                   49.20Gi  5.68Gi    12.36Mi   43.60Gi  11% 0.02%  ONLINE
+  # - clio2_pool/clio2                                    5.67Gi    5.67Gi    42.80Gi      11.52%       
+  # - clio2_pool/clio2/home                               636.50Ki  636.50Ki  42.80Gi      0.00%        
+  # - clio2_pool/clio2/local                              668.00Ki  668.00Ki  42.80Gi      0.00%        
+  # root_pool                                    136.00Gi 66.65Gi   58.10Gi   71.40Gi  47% 42.72% ONLINE
+  # - root_pool/ROOT                                      8.55Gi    21.00Ki   67.23Gi      0.00%        
+  # - root_pool/ROOT/S10u9_20101111                       123.08Mi  85.44Mi   67.23Gi      0.06%        
+  # - root_pool/ROOT/S10u9_20101111/var                   37.64Mi   37.64Mi   67.23Gi      0.03%        
+  # - root_pool/ROOT/S10u9_20110104                       8.43Gi    7.29Gi    67.23Gi      5.36%        
+  # - root_pool/ROOT/S10u9_20110104/var                   1.14Gi    1.14Gi    67.23Gi      0.83%        
+  # - root_pool/common                                    648.50Ki  648.50Ki  67.23Gi      0.00%        
+  # - root_pool/export                                    1.62Mi    964.50Ki  67.23Gi      0.00%        
+  # - root_pool/export/home                               692.50Ki  692.50Ki  67.23Gi      0.00%        
+
+as you can see we have added new columns named used_2 and cap_2. If you sum up all the used_2 of, let's say root_pool :
+     58.10Gi
+ +   21.00Ki
+ +   85.44Mi
+ +   37.64Mi
+ +   7.29Gi
+ +   1.14Gi
+ + 648.50Ki
+ + 964.50Ki
+ + 692.50Ki
+you will get approximatively what is actually taken by root_pool under used :
+66.65Gi
+
+And then if you configure correctly the xymon client & server, you will be able to get the graphics which will show you how your zfs FSs are changing by the time.
+
+such as the one in doc/zfs-4-xymon.png
+
