@@ -1,0 +1,638 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+'''Displays each ZFS pool name with capacity and status'''
+# 02.02.2010 Cedric.Briner@unige.ch
+#            created
+# 22.07.2010 Cedric.Briner@unige.ch
+#            tested on zpool Unavailable, Faulted, Degraded
+#            separettely to ensure that every kinds of error
+#            report as a red page
+# 29.10.2010 Cedric.Briner@UniGE.ch
+#            - modified the class to take in account IEC and SI prefixes. SI
+#            prefixes are the common one (...n,µ,m,k,M,G,T...) when IEC prefixes
+#            were the one used in computer science (Ki,Mi,Gi...). More
+#            information on : http://en.wikipedia.org/wiki/Binary_prefix.
+#            - take in account that zfs command give information on IEC format
+#            with uncorrect format (eg: 1Ko, is in fact 1Kio then 1024 octet)
+# 23.11.2010 Cedric.Briner@UniGE.ch
+#            - the zpool command changed, now the get take
+#             free --------instead of---> available
+#             allocated ---instead of---> used
+# 04.04.2011 cED
+#            - remanaged the configuration file by grouping:
+#              CAPACITY_TRESHOLD, LCAPACITY_TRESHOLD_TUNING to LTRESHOLD
+#            - add new parameter (LEXCLUDE) to zfs_list_detail_cfg to exclude certain zfs file
+#              such as .backup
+#            - the code now managed the 2 version of zpool with zfs_list_detail_cfg.ZPOOL_VERSION
+#
+# more info on how to create external script
+#   http://hobbitmon.sourceforge.net/docs/man8/hobbitd_rrd.8.html
+#   by using the method "CUSTOM RRD DATA VIA SCRIPTS"
+
+# imports
+import sys, os
+from optparse import OptionParser
+import math
+import datetime
+import subprocess as s
+import re
+#
+import zfs_list_detail_cfg
+
+
+HOBBIT_TESTNAME="zfs"
+
+
+ZPOOL_VER=zfs_list_detail_cfg.ZPOOL_VERSION
+if ZPOOL_VER == 1:
+   ZPOOL_CMD="/usr/sbin/zpool list -o name,size,used,available,capacity,health"
+elif ZPOOL_VER == 2:
+   ZPOOL_CMD="/usr/sbin/zpool list -o name,size,allocated,free,capacity,health"
+
+ZFS_LIST_CMD="/usr/sbin/zfs list -H -t filesystem | cut -f1"
+ZFS_GET_CMD="/usr/sbin/zfs get -H -p used,available %s | cut -f2-3 "
+ZPOOL_STATUS_XV='/usr/sbin/zpool status -xv'
+
+
+PAGE_COLOR='green'
+
+
+# class about config
+class Size(long):
+   ''' from : http://fr.wikipedia.org/wiki/Pr%C3%A9fixe_binaire#Normes
+   IEC : International Electrotechnical Commission (Kio : kibioctet, Mio : mebioctet, ...) 1Kio = 1024 octet
+   SI :  International System of Units (ko, Mo, Go, ...) 1ko = 100 octet
+   '''
+   DEFAULT_OUTPUT_PREFIX='si'  # could be [ 'iec', 'si'  ]
+   lsi_prefix_indice=(('p',-12),('n',-9),('µ',-6), ('m',-3),('',0)
+                     ,('',0),('k',3), ('M',6), ('G',9), ('T',12), ('P',15), ('E',18), ('Z',21), ('Y',24))
+   liec_prefix_indice=(('',0), ('Ki',10), ('Mi',20), ('Gi',30), ('Ti',40), ('Pi',50), ('Ei',60), ('Zi',70), ('Yi',80))
+   lsi_iec_prefix=(('k','Ki'), ('M','Mi'), ('G','Gi'), ('T','Ti'), ('P','Pi'), ('E','Ei'), ('Z','Zi'), ('Y','Yi'))
+   liec_prefix=[prefix for prefix, indice in liec_prefix_indice]
+   # all the lines between here and the first "def function"
+   # allow to manipulated more easily the data above (lsi_prefix_indice, ..., liec_prefix)
+   # si stuff
+   dsi_indice_prefix={}
+   dsi_prefix_indice={}
+   for prefix, indice in lsi_prefix_indice:
+      dsi_indice_prefix[indice]=prefix
+      dsi_prefix_indice[prefix]=indice
+   lsi_prefix=[prefix for prefix, indice in lsi_prefix_indice]
+   # iec stuff
+   diec_indice_prefix={}
+   diec_prefix_indice={}
+   for prefix, indice in liec_prefix_indice:
+      diec_indice_prefix[indice]=prefix
+      diec_prefix_indice[prefix]=indice
+   # si <> iec stuff
+   dsi_iec_prefix={}
+   diec_si_prefix={}
+   for si_prefix, iec_prefix in lsi_iec_prefix:
+      dsi_iec_prefix[si_prefix]=iec_prefix
+      diec_si_prefix[iec_prefix]=si_prefix
+   #
+   # class method
+   def change_default_output_prefix(cls, default_output_prefix):
+      if default_output_prefix in ['iec', 'si']:
+         cls.DEFAULT_OUTPUT_PREFIX=default_output_prefix
+      else:
+         raise Exception ('can not change the "default_output_prefix" to %s' % default_output_prefix)
+   change_default_output_prefix=classmethod(change_default_output_prefix)
+   def __new__(cls, str_size, force_to=None):
+      #
+      # function for commodities
+      def _new_si(str_size, prefix):
+         str_size=str_size.replace(prefix,'')
+         str_size=long( float(str_size)*10**cls.dsi_prefix_indice[prefix] )
+         return long.__new__(cls, str_size)
+      def _new_iec(str_size, prefix):
+         str_size=str_size.replace(prefix,'')
+         str_size=long( float(str_size)*2**cls.diec_prefix_indice[prefix] )
+         return long.__new__(cls, str_size)
+      def _new_force(str_size, force_to, dsi_iec_prefix, diec_si_prefix):
+         if force_to == 'iec': # then it is in SI format
+            for prefix in dsi_iec_prefix.keys():
+               if prefix == '':
+                  continue
+               if -1 != str_size.find(prefix):
+                  iec_prefix=dsi_iec_prefix.get(prefix)
+                  if iec_prefix:
+                     return str_size.replace(prefix, iec_prefix)
+                  raise Exception ('can not force format from SI to IEC for the prefix %s' % prefix)
+         elif force_to == 'si': # then it is in IEC format
+            for prefix in diec_si_prefix.keys():
+               if prefix == '':
+                  continue
+               if -1 != str_size.find(prefix):
+                  si_prefix=diec_si_prefix.get(prefix)
+                  if si_prefix:
+                     return str_size.replace(prefix, si_prefix)
+                  raise Exception ('can not force format from IEC to SI for the prefix %s' % prefix)
+      #
+      # check argument
+      if force_to not in [ 'si', 'iec', None]:
+         raise Exception ("instance Size argument force_to must be in [ 'si', 'iec', None]")
+      #
+      # TYPE: Size
+      if type(str_size) == Size:
+         return str_size
+      #
+      # TYPE: str
+      if type(str_size) in [str]:
+         #
+         # treat the case force_to
+         if force_to != None:
+            str_size=_new_force(str_size, force_to, cls.dsi_iec_prefix, cls.diec_si_prefix)
+         # because the prefix of iec are longer then, search that one first
+         # and then search for si ones
+         #
+         # IEC
+         for prefix in cls.liec_prefix:
+            if prefix == '':
+               continue               
+            if -1 != str_size.find(prefix):
+               return _new_iec(str_size, prefix)
+         #
+         # SI
+         for prefix in cls.lsi_prefix:
+            if prefix == '':
+               continue               
+            if -1 != str_size.find(prefix):
+               return _new_si(str_size, prefix)
+         if not found:
+            try:
+               str_size=long(str_size)
+            except:
+               raise Exception ('cannot create a Size of : %s' % str_size)
+            return long.__new__(cls, str_size)
+      #
+      # TYPE: [int, float, long]
+      if type(str_size) in [int, float, long]:
+         inst=long(str_size)
+      else:
+         raise Exception.ValueError()
+      ret=long.__new__( cls, (inst) )
+      return ret
+   def to_iec(self):
+      if self==0:
+         return '0.00'
+      eng_power=int(math.floor((math.log10(self)/math.log10(2.))/10)*10)
+      ret=float(self)/2.**eng_power
+      return '%.2f' % ret+self.diec_indice_prefix[eng_power]
+   def to_si(self):
+      if self==0:
+         return '0.00'
+      eng_power=int((math.floor(math.log10 (self)/3))*3)
+      ret=float(self)/10.**eng_power
+      return '%.2f' % ret+self.dsi_indice_prefix[eng_power]
+   def __str__(self):
+      if self.DEFAULT_OUTPUT_PREFIX == 'si':
+         return self.to_si()
+      elif self.DEFAULT_OUTPUT_PREFIX == 'iec':
+         return self.to_iec()
+   def str_long(self):
+      return long(self)
+
+# output from print instance <Size> will be in IEC format
+Size.change_default_output_prefix('iec')
+
+class ReName(str):
+   '''this class allow to compile once the RE'''
+   def __new__(cls, name):
+      ret=str.__new__( cls, (name) )
+      ret.re_str='^%s$' % name
+      ret.re=re.compile(ret.re_str)
+      return ret
+
+class ListTreshold(list):
+   '''this class is used with the configuration'''
+   def __init__(self, ltreshold):
+      self.default=ltreshold[0]
+      super(ListTreshold, self).__init__()
+      for name_yellow_red in ltreshold[1:]:
+         name, yellow, red = name_yellow_red
+         name=ReName(name)
+         self.append((name, yellow, red))
+   def value_yellow_red2color(value, yellow, red):
+      ret='green'
+      if value >= yellow:
+         ret='yellow'
+      if value >= red:
+         ret='red'
+      return ret
+   def get_color(name, value):
+      # default value
+      ret=self.value_yellow_red2color(value, *self.default)
+      # check the other possibilities
+      for zpool_treshold_name, yellow, red in self:
+         if zpool_treshold_name.re.match(zpool_name):
+            ret_value=self.value_yellow_red2color(value, yellow, red)
+            break
+
+# parse and read the config
+TRESHOLD=ListTreshold( zfs_list_detail_cfg.LTRESHOLD )
+LEXCLUDE=[ReName(exclude) for exclude in zfs_list_detail_cfg.LEXCLUDE]
+
+def must_be_excluded(name):
+   for exclude in LEXCLUDE:
+      if exclude.re.match(name):
+         return True
+   return False
+
+#
+# definition and classes and populate them
+#
+
+def add_color(first, second):
+   lcolor=['green', 'yellow', 'red']
+   ifirst=lcolor.index(first)
+   isecond=lcolor.index(second)
+   if ifirst >= isecond:
+      return first
+   return second
+
+class Zfs(object):
+   def __init__(self, name):
+      self.name=name
+      self.lchild=[]
+   def __repr__(self):
+      return "zfs(%s)"%self.name
+   def get_used_2(self):
+      ret=self.used
+      for child in self.lchild:
+         ret-=child.used_2
+      ret=Size(ret)
+      return ret
+   used_2=property(get_used_2)
+   def get_cap_2(self):
+      return float(self.used_2)/float(self.zpool.size)*100
+   cap_2=property(get_cap_2)
+   def get_ldescendant(self):
+      descent=self.lchild[:]
+      for child in self.lchild:
+         descent+=child.ldescendant
+      return descent
+   ldescendant=property(get_ldescendant)
+
+def cmp_name(self,other):
+      if not isinstance(other, Zfs):
+         return -1
+      lself=self.name.split('/')
+      lother=other.name.split('/')
+      for i in range(min(len(lself),len(lother))):
+         ret=cmp(lself[i], lother[i])
+         if ret != 0:
+            return ret
+      if len(lself) > len(lother):
+         return 1
+      else:
+         return -1
+
+def populate_zfs():
+   #get the list of all zfs
+   dzfs={}
+   q=s.Popen(ZFS_LIST_CMD, stdout=s.PIPE, shell=True)
+   lzfsname=q.stdout.readlines()
+   for zfsname in lzfsname:
+      zfs=Zfs(zfsname.rstrip())
+      dzfs[zfs.name]=zfs
+      tmp_cmd=ZFS_GET_CMD % zfs.name
+      q=s.Popen(tmp_cmd, stdout=s.PIPE, shell=True)
+      lget=q.stdout.readlines()
+      for get in lget:
+         # get: used 8493892096
+         get=get.rstrip()
+         (prop_name, prop_value )=get.split()
+         if prop_name in ['size', 'used', 'available']:
+            prop_value=Size(long(prop_value))
+         setattr(zfs, prop_name, prop_value)
+   #construct the child depedencies for zfs
+   for zfsname, zfs in dzfs.iteritems():
+      lpath_elem=zfsname.split('/')
+      if len(lpath_elem) > 1:
+         for i in range(len(lpath_elem)-1):
+            subpath='/'.join(lpath_elem[:i+1])
+            dzfs[subpath].lchild.append(zfs)
+   return dzfs
+   
+dzfs=populate_zfs()
+
+class Zpool(object):
+   HEALTH_GREEN='ONLINE'
+   def __init__(self, name, size, allocated, free, cap, health, zfs, force_to=None):      
+      '''header     = "NAME       SIZE  ALLOC  FREE CAP HEALTH"
+      zfs_output = "mediadev_pool 49.2G 7.92G 41.3G 16% ONLINE"
+      zfs_output = "zpool_faulted   -     -     -    -  FAULTED" '''
+      # find the index for each parameter
+      self.name=name
+      self.health=health
+      if health=='FAULTED':
+         self.zfs=None
+         self.size=None
+         self.allocated=None
+         self.allocated_2=None
+         self.free=None
+         self.cap=None
+      else:
+         self.zfs=zfs
+         self.size=Size(size, force_to=force_to)
+         self.allocated=Size(self.zfs.used, force_to=force_to)
+         self.allocated_2=Size(self.zfs.used_2, force_to=force_to)
+         self.free=Size(free, force_to=force_to)
+         self.cap=cap
+      self.color=self.calculate_color()
+   def get_cap_2(self):
+      if self.health=='Faulted':
+         return None
+      else:
+         return float(self.allocated_2)/float(self.size)*100
+   cap_2=property(get_cap_2)
+   def get_lzfs(self):
+      if health=='Faulted':
+         return []
+      else:
+         return [self.zfs]+self.zfs.ldescendant
+   def __repr__(self):
+      return "zpool(%s)" % self.name
+   def calculate_color(self):
+      if self.health != self.HEALTH_GREEN:
+         return 'red'
+      # load the default config
+      default_treshold=TRESHOLD.default
+      # check if there is specific configuration
+      for zpool_treshold_name, yellow, red in TRESHOLD:
+         if zpool_treshold_name.re.match(self.name):
+            default_treshold=(yellow, red)
+            break
+      # in which state are we (green, yellow, red)
+      if self.cap > default_treshold[1]:
+         return 'red'
+      if self.cap > default_treshold[0]:
+         return 'yellow'
+      return 'green'
+
+def populate_zpool():
+   lzpool=[]
+   q=s.Popen(ZPOOL_CMD, stdout=s.PIPE, shell=True)
+   header=q.stdout.readline()
+   lheader=header.split()
+   lentry=q.stdout.readlines()
+   #parse zpool_cmd output
+   #     header = "NAME          SIZE  ALLOC  FREE CAP HEALTH
+   # zfs_output = "mediadev_pool 49.2G 7.92G 41.3G 16% ONLINE"
+   for entry in lentry:
+      lvalue=entry.split()
+      # when a zpool is faulted, there is no corresponding zfs FS.
+      if lvalue[lheader.index('HEALTH')] == 'FAULTED':
+         zpool=Zpool(lvalue[lheader.index('NAME')]
+                    ,None # 'SIZE'
+                    ,None # 'ALLOC'                 oldversion:USED
+                    ,None #'FREE'                 oldversion:AVAILABLE
+                    ,None #'CAP'
+                    ,'FAULTED' # 'HEALTH'
+                    ,None
+                    )
+      else:
+         zfs_root=dzfs[lvalue[lheader.index('NAME')]]
+         if ZPOOL_VER == 1:
+             index_alloc=lvalue[lheader.index('USED')]
+             index_free=lvalue[lheader.index('AVAIL')]
+         elif ZPOOL_VER == 2:
+             index_alloc=lvalue[lheader.index('ALLOC')]
+             index_free=lvalue[lheader.index('FREE')]
+         zpool=Zpool(lvalue[lheader.index('NAME')]
+                    ,lvalue[lheader.index('SIZE')]
+                    #
+                    ,index_alloc
+                    ,index_free
+                    #
+                    ,int( lvalue[lheader.index('CAP')][0:-1]) # cap is 16 and not '16%'
+                    ,lvalue[lheader.index('HEALTH')]
+                    ,zfs_root
+                    ,force_to='iec' # because ZPOOL_CMD gives info in KB when it is actually in KiB
+                    )
+         for zfs in [zfs_root]+zfs_root.ldescendant:
+            zfs.zpool=zpool
+      lzpool.append(zpool)
+   return lzpool
+
+class ZpoolStatus(object):
+   def __init__(self):
+      q=s.Popen(ZPOOL_STATUS_XV, stdout=s.PIPE, shell=True)
+      lret=q.stdout.readlines()
+      self.lret=[ret.rstrip() for ret in lret]
+      self.color='red'
+      if len(self.lret) == 1:
+         if self.lret[0]=='all pools are healthy':
+            self.color='green'
+zpool_status=ZpoolStatus()
+PAGE_COLOR=add_color(PAGE_COLOR, zpool_status.color)
+
+
+
+#use the class
+lzpool=populate_zpool()
+# change PAGE_COLOR
+for zpool in lzpool:
+   PAGE_COLOR=add_color(PAGE_COLOR, zpool.color)
+
+def getSizeOfList(l):
+   return map(lambda x:len(x), l)
+
+def listlist2nicestr(ll):
+   outputFormat=[]
+   if list != type(ll):
+      return 'this is not a list'
+   if len(ll)==0:
+      return ''
+   for i in range(len(ll)):
+      if list != type(ll[i]):
+         return 'this list in not constitued of list'
+      #lelem=lelem+ll[i]
+      if 0 == i:
+         refSizeList=getSizeOfList(ll[i])
+         refLenList=len(ll[i])
+      else:
+         if refLenList != len(ll[i]):
+            return 'error all the list should be the same lenght'
+         sizeList=getSizeOfList(ll[i])
+         for j in range(refLenList):
+            if refSizeList[j]< sizeList[j]:
+               refSizeList[j] = sizeList[j]
+   outputFormatLine=u' '.join( map(lambda x:"%-"+unicode(x)+'s', refSizeList) )
+   output=u''
+   for l in ll:
+      try:
+         output+=outputFormatLine%tuple(l)+u'\n'
+      except UnicodeDecodeError, qq:
+         print str(type(output)), output
+         print l
+         print str(type (l[1])),  l[1]
+         print str(type (ll[13][1][0])), ll[13][1][0]
+         raise qq
+   return output
+
+def show_in_terminal():
+   ret='zpool status -xv :'+','.join(zpool_status.lret)
+   llret=[['name', 'size', 'used', 'used_2', 'avail', 'cap', 'cap_2', 'health']]
+   for zpool in lzpool:
+      if zpool.health=='FAULTED':
+         llret.append([zpool.name, '-', '-', '-'
+                     , '-', '-', '-', zpool.health])
+      else:
+         llret.append([zpool.name, str(zpool.size), str(zpool.allocated), str(zpool.allocated_2)
+                     , str(zpool.free), str(zpool.cap)+'%', '%.2f%%' % zpool.cap_2, zpool.health])
+         zpool.zfs.lchild.sort(cmp_name)
+         for zfs in zpool.zfs.lchild:
+            if must_be_excluded(zfs.name):
+               continue
+            llret.append(['- '+zfs.name, '', str(zfs.used), str(zfs.used_2)
+                        , str(zfs.available), '', '%.2f%%' % zfs.cap_2, ''])
+   # put the llret in a nice shape
+   ret+=2*os.linesep+listlist2nicestr(llret)
+   return ret
+
+def show_in_xymon():
+   # ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
+   #  ! ! ! ! ! ! ! ! !   A T T E N T I O N   ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
+   # ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
+   # the format of xymon has to be very strict, so that it will work with
+   # hobbit rrd. In hobbit_src/lib/htmllog.c we can read
+   #		/* Count how many lines are in the status message. This is needed by hobbitd_graph later */
+   #		linecount = 0; p = restofmsg;
+   #		do {
+   #			/* First skip all whitespace and blank lines */
+   #			while ((*p) && (isspace((int)*p) || iscntrl((int)*p))) p++;
+   #			if (*p) {
+   #				if ((*p == '&') && (parse_color(p+1) != -1)) {
+   #					/* A "warninglight" line - skip it, unless its from a Netware box */
+   #					if (netwarediskreport) linecount++;
+   #				}
+   #				else {
+   #					/* We found something that is not blank, so one more line */
+   #					if (!netwarediskreport) linecount++;
+   #				}
+   #				/* Then skip forward to the EOLN */
+   #				p = strchr(p, '\n');
+   #			}
+   #			} while (p && (*p));
+   # so this means that we have to have one line per entry in the rrd
+   # ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
+   #  ! ! ! ! ! ! ! ! !   A T T E N T I O N   ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
+   # ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! ! !
+   ret='<table>\
+ <tr><td>name</td>\
+ <td align="right">size</td>\
+ <td align="right">used</td>\
+ <td align="right">used_2</td>\
+ <td align="right">avail</td>\
+ <td align="right">cap</td>\
+ <td align="right">cap_2</td>\
+ <td align="right">health</td>\
+ </tr>'
+   for zpool in lzpool:
+      if zpool.health=='FAULTED':
+         ret+='\n <!--name--><tr><td>&%(color)s %(name)s</td>\
+ <!--size--><td align="right">-</td>\
+ <!--used--><td align="right">-</td>\
+ <!--used_2--><td align="right">-</td>\
+ <!--avail--><td align="right">-</td>\
+ <!--cap--><td align="right">-</td>\
+ <!--cap_2--><td align="right">-</td>\
+ <!--health--><td align="right"> %(health)s</td>\
+ </tr>' %{
+          'color': zpool.color
+         ,'name': zpool.name
+         ,'health': zpool.health
+         }
+      else:
+         ret+='\n <!--LineToGraph:zfs_v1.1 name:%(name)s cap:%(cap)s cap_2:%(cap_2).2f -->' %{
+            'name': zpool.name
+           ,'cap': zpool.cap
+           ,'cap_2': float(zpool.allocated_2)/float(zpool.size)*100
+         }
+         ret+='\n <!--name--><tr><td>&%(color)s %(name)s</td>\
+ <!--size--><td align="right"> %(size)s</td>\
+ <!--used--><td align="right"> %(used)s</td>\
+ <!--used_2--><td align="right"> %(used_2)s</td>\
+ <!--avail--><td align="right"> %(avail)s</td>\
+ <!--cap--><td align="right"> %(cap)s%%</td>\
+ <!--cap_2--><td align="right"> %(cap_2).2f%%</td>\
+ <!--health--><td align="right"> %(health)s</td>\
+ </tr>' %{
+          'color': zpool.color
+         ,'name': zpool.name
+         ,'size': zpool.size
+         ,'used': zpool.allocated
+         ,'used_2': zpool.allocated_2
+         ,'avail': zpool.free
+         ,'cap': zpool.cap
+         ,'cap_2': float(zpool.allocated_2)/float(zpool.size)*100
+         ,'health': zpool.health
+         }
+         zpool.zfs.lchild.sort(cmp_name)
+         for zfs in zpool.zfs.lchild:
+            if must_be_excluded(zfs.name):
+               continue
+            ret+='\n <!--LineToGraph:zfs_v1.2 name:%(name)s cap_2:%(cap_2).2f -->' %{
+            'name': zfs.name
+            ,'cap_2': zfs.cap_2
+            }
+            ret+=' <!-- name --><tr><td>%(name)s</td> \
+ <!--size--><td align="right"> %(size)s</td>\
+ <!--used--><td align="right"> %(used)s</td>\
+ <!--used_2--><td align="right"> %(used_2)s</td>\
+ <!--avail--><td align="right"> %(avail)s</td>\
+ <!--cap--><td align="right"> %(cap)s</td>\
+ <!--cap_2--><td align="right"> %(cap_2).2f%%</td>\
+ <!--health--><td align="right"> %(health)s</td>\
+ </tr>' %{
+         'name': '&nbsp;'+zfs.name
+         ,'size': ''
+         ,'used': zfs.used
+         ,'used_2': zfs.used_2
+         ,'avail': zfs.available
+         ,'cap': ''
+         ,'cap_2': zfs.cap_2
+         ,'health': ''
+         }
+   ret+='<tr><td valign="top">&%(color)s zpool status -xv</td><td colspan="6">%(lret)s</td></tr>' %{
+     'color':zpool_status.color
+    ,'lret':'<br/>'.join(zpool_status.lret)}
+   ret = ret[:-1]+'</tr></table>\n'
+   return ret
+
+def is_launched_within_xymon():
+   '''
+   if this script was launched within xymon, then the environment variable BB is set.
+   '''
+   return bool(os.environ.get('BB', None))
+   
+if '__main__' == __name__:
+   parser = OptionParser()
+   parser.add_option("--show-bb-cmd", action="store_true", dest="show_bb_cmd", default=False
+                    ,help="this is used for debug purpose to see what actually is send to bb")
+   (options, args) = parser.parse_args()
+   if ( not is_launched_within_xymon() ) and (not options.show_bb_cmd) :
+      print show_in_terminal()
+      sys.exit(0)
+   table=show_in_xymon()
+   cmd='%(bbcmd)s %(bbdisp)s "status %(machine)s.%(testname)s %(display_color)s %(date)s \n %(table)s"' % \
+       {'bbcmd':os.environ.get('BB','env_of_bb')
+       ,'bbdisp':os.environ.get('BBDISP','env_of_bbdisp')
+       ,'machine':os.environ.get('MACHINE','env_of_machine')
+       ,'testname':HOBBIT_TESTNAME
+       ,'date':datetime.datetime.now().strftime('%a, %d %b %Y %H:%M:%S h MET')
+       ,'display_color':PAGE_COLOR
+       ,'table':table
+       }
+   if ( options.show_bb_cmd )and( not is_launched_within_xymon() ):
+      cmd.replace('\n', '\\\n')
+      print cmd
+      sys.exit(0)         
+   if is_launched_within_xymon():
+      os.system(cmd)
+      sys.exit(0)
+   parser.print_help()
+   sys.exit(1)
+
