@@ -1,35 +1,32 @@
 ON SERVER SIDE
 --------------
-copy server-side/rrd_custom-graphs.pl <hobbit_server>/ext/
+cp <GIT_REP>/server-side/rrd_custom-graphs.pl <hobbit_server>/ext/
 chmod a+x <hobbit_server>/ext/rrd_custom-graphs.pl
-
-in <hobbit_server>/ext/hobbitcgi.cfg add :
+#
+# in <hobbit_server>/ext/hobbitcgi.cfg add :
 CGI_SVC_OPTS="<..> --multigraphs=zfs"
-
-in <hobbit_server>/ext/hobbitgraph.cfg add:
+#
+# in <hobbit_server>/ext/hobbitgraph.cfg add :
 [zfs]
    FNPATTERN zfs[.](.+).rrd
-
-in <hobbit_server>/ext/hobbitlaunch.cfg add:
+#
+# in <hobbit_server>/ext/hobbitlaunch.cfg add :
 CMD hobbitd_channel <...> --extra-tests=zfs --extra-script=/usr/local/hobbit/server/ext/rrd_custom-graphs.pl <...>
-
-in <hobbit_server>/ext/hobbitserver.cfg add:
+#
+# in <hobbit_server>/ext/hobbitserver.cfg add :
 TEST2RRD="<...>,zfs"
 GRAPHS="<...>,zfs"
 
 
 ON CLIENT SIDE
 --------------
-copy client-side/zfs{,_cfg.py} <hobbit_client>/ext/
-chmod a+x <hobbit_client>/ext/zfs
-
-add line to <hobbit_client>/etc/clientlaunch.cfg
+cp <GIT_REP>/client-side/zfs-list-detail <hobbit_client>/ext/
+cp <GIT_REP>/client-side/zfs_list_detail_cfg.py <hobbit_client>/ext/
+chmod a+x <hobbit_client>/ext/zfs-list-detai
+#
+# in <hobbit_client>/etc/clientlaunch.cfg add :
 [zfs]
         ENVFILE $HOBBITCLIENTHOME/etc/hobbitclient.cfg
         CMD $HOBBITCLIENTHOME/ext/zfs
         LOGFILE $HOBBITCLIENTHOME/logs/zfs.log
         INTERVAL 5m
-
-
-TODO: finish the doc
-
