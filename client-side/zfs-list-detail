@@ -24,6 +24,8 @@
 #            - add new parameter (LEXCLUDE) to zfs_list_detail_cfg to exclude certain zfs file
 #              such as .backup
 #            - the code now managed the 2 version of zpool with zfs_list_detail_cfg.ZPOOL_VERSION
+# 21.12.2012 DP
+#            -  no errors if no ZFS pool exist.
 #
 # more info on how to create external script
 #   http://hobbitmon.sourceforge.net/docs/man8/hobbitd_rrd.8.html
@@ -293,6 +295,8 @@ def populate_zfs():
    dzfs={}
    q=s.Popen(ZFS_LIST_CMD, stdout=s.PIPE, shell=True)
    lzfsname=q.stdout.readlines()
+   if (lzfsname[0] == 'no datasets available\n'):
+         return dzfs
    for zfsname in lzfsname:
       zfs=Zfs(zfsname.rstrip())
       dzfs[zfs.name]=zfs
