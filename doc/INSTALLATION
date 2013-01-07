@@ -11,7 +11,11 @@ CGI_SVC_OPTS="<..> --multigraphs=zfs"
    FNPATTERN zfs[.](.+).rrd
 #
 # in <hobbit_server>/ext/hobbitlaunch.cfg add :
-CMD hobbitd_channel <...> --extra-tests=zfs --extra-script=/usr/local/hobbit/server/ext/rrd_custom-graphs.pl <...>
+# in the section [rrdstatus]
+[rrdstatus]
+        ENVFILE /usr/lib/hobbit/server/etc/hobbitserver.cfg
+        NEEDS hobbitd
+        CMD hobbitd_channel --channel=status --log=$BBSERVERLOGS/rrd-status.log hobbitd_rrd --extra-tests=zfs --extra-script=/usr/lib/hobbit/server/ext/rrd_custom-graphs.pl --rrddir=$BBVAR/rrd
 #
 # in <hobbit_server>/ext/hobbitserver.cfg add :
 TEST2RRD="<...>,zfs"
